@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Snake Game – Chaos Mode</title>
+<style>
+  body {
+      margin: 0;
+      background: #111;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: Arial;
+      color: white;
+  }
+  canvas {
+      background: #000;
+      border: 3px solid white;
+  }
+  #menu {
+      position: absolute;
+      text-align: center;
+  }
+  button {
+      background: #222;
+      color: white;
+      border: 2px solid #fff;
+      font-size: 20px;
+      padding: 10px 20px;
+      margin: 10px;
+      cursor: pointer;
+  }
+  button:hover {
+      background: #444;
+  }
+  #leaderboardBox {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 400px;
+      height: 500px;
+      background-color: rgba(0,0,0,0.9);
+      border: 3px solid white;
+      color: white;
+      padding: 20px;
+      overflow: auto;
+  }
+  #leaderboardBox h2 {
+      text-align: center;
+  }
+  #leaderboardBox ul {
+      list-style: none;
+      padding: 0;
+  }
+  #leaderboardBox button {
+      display: block;
+      margin: 20px auto 0 auto;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="600" height="600"></canvas>
+
+<div id="menu">
+  <h1>Snake Game</h1>
+  <div id="highScore" style="color: gold; margin-bottom: 10px;"></div>
+  <button id="playBtn">Play</button>
+  <button id="modeBtn">Mode: Bordered</button>
+  <button id="hsBtn">High Scores</button>
+</div>
+
+<div id="leaderboardBox">
+  <h2>Leaderboard</h2>
+  <ul id="leaderboardList"></ul>
+  <button id="closeLeaderboard">Close</button>
+</div>
+
+<audio id="eatSound" src="https://actions.google.com/sounds/v1/animals/bee_hive.ogg"></audio>
+<audio id="gameOverSound" src="https://actions.google.com/sounds/v1/cartoon/cartoon_boing.ogg"></audio>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
+  import { getFirestore, collection, addDoc, query, orderBy, limit, getDocs } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDn7hLUNgEW2v-kS7Nhw0xr3piHqiacplg",
+    authDomain: "snake-game-leaderboard-f73a9.firebaseapp.com",
+    projectId: "snake-game-leaderboard-f73a9",
+    storageBucket: "snake-game-leaderboard-f73a9.firebasestorage.app",
+    messagingSenderId: "890205928218",
+    appId: "1:890205928218:web:4c6dc18db0e608a74e4aa3"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const size = 20;
+
+  const NORMAL_ACCEL = 0.85;
+  const SPECIAL_ACCEL = 0.85;
+
+  let snake, dx, dy, food, specialFood;
+  let score, moveDelay, lastTime;
+  let gameRunning = false;
+  let borderlessMode = false;
+
+  const eatSound = document.getElementById("eatSound");
+  const gameOverSound = document.getElementById("gameOverSound");
+
+  const leaderboardBox = document.getElementById("leaderboardBox");
+  const leaderboardList = document.getElementById("leaderboardList");
+  const closeLeaderboard = document.getElementById("closeLeaderboard");
+  const highScoreDiv = document.getElementById("highScore");
+
+  const playBtn = document.getElementById("playBtn");
+  const modeBtn = document.getElementById("modeBtn");
+  const hsBtn = document.getElementById("hsBtn");
+
+  // ------------------ Button Handlers ------------------
+  playBtn.onclick = () => {
+    document.getElementById("menu").style.display = "none";
+    leaderboardBox.style.display = "none";
+    startGame();
+  };
+
+  modeBtn.onclick = () => {
+    borderlessMode = !borderlessMode;
+    modeBtn.innerText = borderlessMode ? "Mode: Borderless" : "Mode: Bordered";
+    updateHighScore();
+  };
+
+  hsBtn.onclick = () => showLeaderboard();
+
+  closeLeaderboard.onclick = () => {
+    leaderboardBox.style.display = "none";
+    document.getElementById("menu").style.display = "block";
+  };
+
+  // ------------------ Game Functions ------------------
+  function startGame() {
+    snake = [{x:200,y:200}];
+    dx = size;
+    dy = 0;
+    food = randomFood();
+    specialFood = null;
+    score = 0;
+
+    moveDelay = 180;
+    lastTime = 0;
+    gameRunning = true;
+
+    canvas.style.border = borderlessMode ? "none" : "3px solid white";
+
+    document.addEventListener("keydown", handleKey);
+    requestAnimationFrame(gameLoop);
+  }
+
+  function handleKey(e){
+    if (!gameRunning || e.repeat) return;
+
+    if(e.key==="ArrowUp" && dy===0){ dx=0; dy=-size; }
+    if(e.key==="ArrowDown" && dy===0){ dx=0; dy=size; }
+    if(e.key==="ArrowLeft" && dx===0){ dx=-size; dy=0; }
+    if(e.key==="ArrowRight" && dx===0){ dx=size; dy=0; }
+  }
+
+  function gameLoop(time){
+    if(!gameRunning) return;
+
+    if(time - lastTime >= moveDelay){
+      update();
+      lastTime = time;
+    }
+    requestAnimationFrame(gameLoop);
+  }
+
+  function maybeSpawnSpecialFood(){
+    if(!specialFood && Math.random() < 0.12){
+      specialFood = randomFood();
+    }
+  }
+
+  function update(){
+    moveDelay = Math.max(moveDelay, 1);
+
+    let headX = snake[0].x + dx;
+    let headY = snake[0].y + dy;
+
+    if(borderlessMode){
+      if(headX <0) headX = canvas.width - size;
+      if(headX >= canvas.width) headX = 0;
+      if(headY <0) headY = canvas.height - size;
+      if(headY >= canvas.height) headY = 0;
+    }
+
+    const head = {x:headX, y:headY};
+    snake.unshift(head);
+
+    if(head.x===food.x && head.y===food.y){
+      score++;
+      food = randomFood();
+      maybeSpawnSpecialFood();
+      eatSound.currentTime = 0;
+      eatSound.play();
+      moveDelay *= NORMAL_ACCEL;
+    }
+    else if(specialFood && head.x===specialFood.x && head.y===specialFood.y){
+      score += 5;
+      specialFood = null;
+      snake.push({}, {}, {});
+      eatSound.currentTime = 0;
+      eatSound.play();
+      moveDelay *= SPECIAL_ACCEL;
+    }
+    else{
+      snake.pop();
+    }
+
+    if(!borderlessMode){
+      if(head.x<0 || head.x>=canvas.width || head.y<0 || head.y>=canvas.height){
+        gameOver();
+      }
+    }
+
+    for(let i=1;i<snake.length;i++){
+      if(head.x===snake[i].x && head.y===snake[i].y){
+        gameOver();
+      }
+    }
+
+    draw();
+  }
+
+  function draw(){
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.fillStyle = "lime";
+    snake.forEach(p=>ctx.fillRect(p.x,p.y,size,size));
+
+    ctx.fillStyle = "red";
+    ctx.fillRect(food.x,food.y,size,size);
+
+    if(specialFood){
+      ctx.fillStyle = "gold";
+      ctx.fillRect(specialFood.x,specialFood.y,size,size);
+    }
+
+    ctx.fillStyle = "white";
+    ctx.font = "18px Arial";
+    ctx.fillText("Score: "+score,10,20);
+  }
+
+  function randomFood(){
+    return {
+      x: Math.floor(Math.random()*(canvas.width/size))*size,
+      y: Math.floor(Math.random()*(canvas.height/size))*size
+    };
+  }
+
+  // ------------------ Game Over ------------------
+  async function gameOver(){
+    gameRunning = false;
+    gameOverSound.play();
+
+    let name = prompt("Game Over! Enter your name:","Player") || "Player";
+    await saveScore(name, score);
+    await updateHighScore();
+
+    leaderboardBox.style.display = "none";
+    document.getElementById("menu").style.display = "block";
+
+    document.removeEventListener("keydown", handleKey);
+
+    snake = [];
+    dx = dy = 0;
+    food = null;
+    specialFood = null;
+    score = 0;
+  }
+
+  // ------------------ Firebase Functions ------------------
+  async function saveScore(name, score){
+    console.log("saveScore called:", name, score, borderlessMode);
+    try {
+      await addDoc(collection(db, "leaderboard"), {
+        username: name,
+        score: score,
+        timestamp: Date.now(),
+        mode: borderlessMode ? "borderless" : "bordered"
+      });
+      console.log("Score submitted to Firebase!");
+    } catch(e){
+      console.error("Error submitting score: ", e);
+    }
+  }
+
+  async function showLeaderboard(){
+    leaderboardList.innerHTML = "";
+
+    leaderboardBox.querySelector("h2").textContent =
+      borderlessMode ? "Leaderboard (Borderless)" : "Leaderboard (Bordered)";
+
+    try {
+      const q = query(
+        collection(db, "leaderboard"),
+        orderBy("score", "desc"),
+        limit(50)
+      );
+      const querySnapshot = await getDocs(q);
+
+      let i = 1;
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        if(data.mode === (borderlessMode ? "borderless" : "bordered") && i <= 10){
+          let li = document.createElement("li");
+          li.textContent = `${i}. ${data.username} - ${data.score}`;
+          leaderboardList.appendChild(li);
+          i++;
+        }
+      });
+
+      leaderboardBox.style.display = "block";
+      document.getElementById("menu").style.display = "none";
+    } catch(e){
+      console.error("Error fetching leaderboard: ", e);
+    }
+  }
+
+  async function updateHighScore(){
+    try {
+      const q = query(
+        collection(db, "leaderboard"),
+        orderBy("score", "desc"),
+        limit(50)
+      );
+      const querySnapshot = await getDocs(q);
+      let topScore = null;
+
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        if(data.mode === (borderlessMode ? "borderless" : "bordered") && !topScore){
+          topScore = data;
+        }
+      });
+
+      highScoreDiv.innerHTML = topScore
+        ? `🏆 ${topScore.username} - ${topScore.score}`
+        : "🏆 No scores yet";
+    } catch(e){
+      console.error("Error fetching high score: ", e);
+    }
+  }
+
+  // Initial fetch
+  updateHighScore();
+</script>
+
+</body>
+</html>
